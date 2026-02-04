@@ -1,0 +1,29 @@
+name: Ejecutar Bot Mercado Público
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+jobs:
+  ejecutar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Crear archivo credenciales
+        run: |
+          echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credenciales.json
+
+      - name: Ejecutar script
+        run: python bot.py
