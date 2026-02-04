@@ -1,5 +1,9 @@
+import os
+import json
 import time
-import undetected_chromedriver as uc
+from datetime import datetime
+
+import google_colab_selenium as gs
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -7,189 +11,201 @@ from selenium.webdriver.support import expected_conditions as EC
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
-# ==============================
-# CONFIGURACIÓN
-# ==============================
 
-RUT_BUSCAR = "61.980.230-6"
+# ===== CONFIGURACIÓN =====
 
-SPREADSHEET_ID = "1s1XwpGs1XDggSaUOi0_0jA6Z2sLXYBk4lkDU0aZlkc4"
+RUT = "61.980.230-6"
+
+SPREADSHEET_ID = "TU_ID_DE_GOOGLE_SHEETS_AQUÍ"
 HOJA = "historial"
-
-ARCHIVO_CREDENCIALES = "credenciales.json"
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# ==============================
-# GOOGLE SHEETS
-# ==============================
+ARCHIVO_CREDENCIALES = "credenciales.json"
+
+
+# ===== CONEXIÓN A GOOGLE SHEETS =====
 
 def conectar_sheets():
-    creds = Credentials.from_service_account_file(
-        ARCHIVO_CREDENCIALES,
-        scopes=SCOPES
-    )
+
+    # Si existe variable de entorno (GitHub Actions)
+    if "GOOGLE_CREDENTIALS" in os.environ:
+        print("Usando credenciales desde variable de entorno")
+
+        creds_json = os.environ["GOOGLE_CREDENTIALS"]
+        creds_info = json.loads(creds_json)
+
+        creds = Credentials.from_service_account_info(
+            creds_info,
+            scopes=SCOPES
+        )
+
+    else:
+        print("Usando archivo credenciales.json local")
+
+        creds = Credentials.from_service_account_file(
+            ARCHIVO_CREDENCIALES,
+            scopes=SCOPES
+        )
+
     service = build("sheets", "v4", credentials=creds)
     return service.spreadsheets()
 
 
+# ===== LEER HISTORIAL =====
+
 def leer_historial(sheets):
-    rango = f"{HOJA}!A2:F"
 
-    result = sheets.values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=rango
-    ).execute()
-
-    valores = result.get("values", [])
-
-    return {fila[1] for fila in valores if len(fila) > 1}
-
-
-def guardar_resultados(sheets, resultados):
     rango = f"{HOJA}!A:F"
 
-    valores = []
+    try:
+        result = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=rango
+        ).execute()
 
-    for r in resultados:
-        valores.append([
-            time.strftime("%Y-%m-%d %H:%M:%S"),
-            r["numero"],
-            r["nombre"],
-            r["comprador"],
-            r["fecha_cierre"],
-            r["estado"]
-        ])
+        valores = result.get("values", [])
 
-    body = {"values": valores}
+        return valores
+
+    except Exception as e:
+        print("Error leyendo historial:", e)
+        return []
+
+
+# ===== GUARDAR NUEVOS RESULTADOS =====
+
+def guardar_resultados(sheets, nuevos):
+
+    rango = f"{HOJA}!A:F"
+
+    body = {
+        "values": nuevos
+    }
 
     sheets.values().append(
         spreadsheetId=SPREADSHEET_ID,
         range=rango,
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
+        valueInputOption="USER_ENTERED",
         body=body
     ).execute()
 
+    print(f"Se guardaron {len(nuevos)} filas nuevas en Google Sheets")
 
-# ==============================
-# SELENIUM - EXTRACCIÓN
-# ==============================
+
+# ===== EJECUTAR BÚSQUEDA EN MERCADO PÚBLICO =====
 
 def ejecutar_busqueda():
 
     print("Iniciando Selenium...")
 
-    options = uc.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-
-    driver = uc.Chrome(options=options)
+    driver = gs.UndetectedChromeDriver()
     wait = WebDriverWait(driver, 40)
 
-    try:
-        print("Accediendo al Buscador Avanzado...")
-        driver.get("https://www.mercadopublico.cl/portal/Modules/Site/Busquedas/BuscadorAvanzado.aspx?qs=1")
+    resultados = []
 
-        time.sleep(8)
+    try:
+        print("Accediendo a Mercado Público...")
+        driver.get(
+            "https://www.mercadopublico.cl/portal/Modules/Site/Busquedas/BuscadorAvanzado.aspx?qs=1"
+        )
+
+        time.sleep(7)
 
         print("Marcando checkbox Comprador...")
 
         chk = wait.until(
             EC.element_to_be_clickable((By.ID, "chkComprador"))
         )
-        driver.execute_script("arguments[0].click();", chk)
+        if not chk.is_selected():
+            chk.click()
 
-        time.sleep(2)
-
-        print("Abriendo modal de búsqueda de comprador...")
+        print("Abriendo modal de búsqueda...")
 
         btn = wait.until(
             EC.element_to_be_clickable((By.ID, "btnComprador"))
         )
-        driver.execute_script("arguments[0].click();", btn)
+        btn.click()
 
-        print("Modal abierto.")
+        print("Modal abierto correctamente.")
 
-        input_rut = wait.until(
+        input_run = wait.until(
             EC.visibility_of_element_located((By.NAME, "txtTaxId"))
         )
 
-        input_rut.clear()
-        input_rut.send_keys(RUT_BUSCAR)
+        input_run.clear()
 
-        time.sleep(2)
+        for char in RUT:
+            input_run.send_keys(char)
+            time.sleep(0.1)
 
-        btn_search = driver.find_element(By.NAME, "btnSearchComprador")
-        driver.execute_script("arguments[0].click();", btn_search)
+        time.sleep(1)
 
-        print("RUT ingresado y buscado.")
+        driver.find_element(By.NAME, "btnSearchComprador").click()
 
-        org = wait.until(
+        print("RUT buscado.")
+
+        org_link = wait.until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "span[id*='lblOrganizationName']"))
         )
-        org.click()
+        org_link.click()
 
         print("Organización seleccionada.")
 
-        time.sleep(3)
+        try:
+            wait.until(EC.alert_is_present())
+            driver.switch_to.alert.accept()
+        except:
+            pass
 
         print("Ejecutando búsqueda final...")
 
         btn_buscar = wait.until(
             EC.element_to_be_clickable((By.NAME, "btnBusqueda"))
         )
+        btn_buscar.click()
 
-        driver.execute_script("arguments[0].click();", btn_buscar)
-
-        print("Esperando resultados...")
-
+        print("Cargando resultados finales...")
         time.sleep(10)
 
-        print("Extrayendo resultados...")
+        print("Extrayendo TEXTO desde la ventana de resultados...")
 
-        datos = []
+        filas = driver.find_elements(
+            By.CSS_SELECTOR,
+            "tr.cssGridAdvancedSearch, tr.cssGridAdvancedSearchAlter"
+        )
 
-        for i in range(1, 4):
+        for fila in filas[:3]:
 
-            try:
-                base = f"rptResultados_ctl0{i}"
+            columnas = fila.find_elements(By.TAG_NAME, "td")
 
-                numero = driver.find_element(By.ID, f"{base}_lblCodigo").text
-                nombre = driver.find_element(By.ID, f"{base}_lblNombre").text
-                comprador = driver.find_element(By.ID, f"{base}_lblComprador").text
-                fecha = driver.find_element(By.ID, f"{base}_lblFecha").text
-                estado = driver.find_element(By.ID, f"{base}_lblEstado").text
+            if len(columnas) >= 5:
+                numero = columnas[0].text.strip()
+                nombre = columnas[1].text.strip()
+                comprador = columnas[2].text.strip()
+                fecha_cierre = columnas[3].text.strip()
+                estado = columnas[4].text.strip()
 
-                datos.append({
-                    "numero": numero.strip(),
-                    "nombre": nombre.strip(),
-                    "comprador": comprador.strip(),
-                    "fecha_cierre": fecha.strip(),
-                    "estado": estado.strip()
+                resultados.append({
+                    "numero": numero,
+                    "nombre": nombre,
+                    "comprador": comprador,
+                    "fecha_cierre": fecha_cierre,
+                    "estado": estado
                 })
 
-            except Exception:
-                break
-
-        print(f"Se extrajeron {len(datos)} resultados.")
-
-        return datos
+        return resultados
 
     except Exception as e:
+        print("ERROR EN SELENIUM:", e)
         driver.save_screenshot("error.png")
-        print("Error detectado. Se guardó captura error.png")
-        raise e
+        return []
 
     finally:
         driver.quit()
 
 
-# ==============================
-# PROCESO PRINCIPAL
-# ==============================
+# ===== PROCESO PRINCIPAL =====
 
 def main():
 
@@ -198,27 +214,40 @@ def main():
     print("Leyendo historial existente...")
     historial = leer_historial(sheets)
 
+    numeros_previos = [fila[1] for fila in historial[1:]] if len(historial) > 1 else []
+
     print("Ejecutando búsqueda en Mercado Público...")
-    resultados = ejecutar_busqueda()
+    datos = ejecutar_busqueda()
 
-    nuevas = []
+    if not datos:
+        print("No se encontraron resultados")
+        return
 
-    for r in resultados:
-        if r["numero"] not in historial:
-            nuevas.append(r)
+    nuevos = []
 
-    print(f"Licitaciones nuevas detectadas: {len(nuevas)}")
+    for d in datos:
 
-    if nuevas:
-        print("Guardando nuevas licitaciones en Google Sheets...")
-        guardar_resultados(sheets, nuevas)
-        print("Guardado exitoso.")
+        if d["numero"] not in numeros_previos:
 
-    print("\n=== RESUMEN ===")
-    for r in resultados:
-        print(f"- {r['numero']} | {r['nombre']}")
+            fila = [
+                datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                d["numero"],
+                d["nombre"],
+                d["comprador"],
+                d["fecha_cierre"],
+                d["estado"]
+            ]
 
-    print("\nProceso finalizado correctamente.")
+            nuevos.append(fila)
+
+    if nuevos:
+        print(f"Se detectaron {len(nuevos)} licitaciones nuevas")
+        guardar_resultados(sheets, nuevos)
+
+    else:
+        print("No hay licitaciones nuevas")
+
+    print("Proceso finalizado correctamente")
 
 
 if __name__ == "__main__":
