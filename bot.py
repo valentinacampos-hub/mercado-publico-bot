@@ -7,183 +7,170 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-# =============== CONFIGURACIÓN ===============
+# ========== CONFIGURACIÓN ==========
 
 RUT = "61.980.230-6"
-GOOGLE_SHEET_NAME = "Licitaciones MP"
 
-# =============== AUTENTICACIÓN GOOGLE SHEETS ===============
+GOOGLE_SHEET_NAME = "historial"
 
-scope = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/drive"
-]
+# ===================================
 
-creds = ServiceAccountCredentials.from_json_keyfile_name("credenciales.json", scope)
-client = gspread.authorize(creds)
+def conectar_sheets():
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive"
+    ]
 
-sheet = client.open(GOOGLE_SHEET_NAME).worksheet("historial")
+    creds = ServiceAccountCredentials.from_json_keyfile_name(
+        "credenciales.json", scope
+    )
 
-# =============== FUNCIONES ===============
+    client = gspread.authorize(creds)
+    sheet = client.open(GOOGLE_SHEET_NAME).sheet1
 
-def obtener_historial():
-    try:
-        datos = sheet.get_all_records()
-        return [fila["numero"] for fila in datos]
-    except:
-        return []
+    return sheet
 
-def guardar_resultados(resultados):
-    fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+def obtener_codigos_existentes(sheet):
+    datos = sheet.get_all_records()
+
+    codigos = [fila["número"] for fila in datos]
+
+    return codigos
+
+
+def guardar_resultados_en_sheets(resultados):
+    sheet = conectar_sheets()
+
+    existentes = obtener_codigos_existentes(sheet)
+
+    nuevos = 0
 
     for r in resultados:
-        sheet.append_row([
-            fecha,
-            r["numero"],
-            r["nombre"],
-            r["comprador"],
-            r["fecha"],
-            r["estado"]
-        ])
+        if r["numero"] not in existentes:
 
-def detectar_nuevas(resultados, historial):
-    nuevas = []
-    for r in resultados:
-        if r["numero"] not in historial:
-            nuevas.append(r)
-    return nuevas
+            fila = [
+                datetime.now().strftime("%d-%m-%Y %H:%M:%S"),
+                r["numero"],
+                r["nombre"],
+                r["comprador"],
+                r["fecha"],
+                r["estado"]
+            ]
 
-# =============== INICIO SELENIUM ===============
+            sheet.append_row(fila)
+            nuevos += 1
 
-driver = gs.UndetectedChromeDriver()
-wait = WebDriverWait(driver, 40)
+    print(f"Se agregaron {nuevos} licitaciones nuevas a Google Sheets.")
 
-try:
-    print("Accediendo a Mercado Público...")
-    driver.get("https://www.mercadopublico.cl/portal/Modules/Site/Busquedas/BuscadorAvanzado.aspx?qs=1")
-    time.sleep(6)
 
-    print("Marcando checkbox Comprador a Buscar...")
-
-    chk = wait.until(EC.element_to_be_clickable((By.ID, "chkComprador")))
-    if not chk.is_selected():
-        chk.click()
-
-    print("Abriendo modal de búsqueda...")
-
-    btn_comprador = wait.until(
-        EC.element_to_be_clickable((By.ID, "btnComprador"))
-    )
-    driver.execute_script("arguments[0].click();", btn_comprador)
-
-    print("Modal abierto correctamente.")
-
-    input_run = wait.until(
-        EC.visibility_of_element_located((By.NAME, "txtTaxId"))
-    )
-
-    input_run.clear()
-
-    for char in RUT:
-        input_run.send_keys(char)
-        time.sleep(0.1)
-
-    btn_search_modal = driver.find_element(By.NAME, "btnSearchComprador")
-    driver.execute_script("arguments[0].click();", btn_search_modal)
-
-    print("RUT buscado.")
-
-    org_link = wait.until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, "span[id*='lblOrganizationName']"))
-    )
-    org_link.click()
-
-    print("Organización seleccionada.")
-
-    try:
-        wait.until(EC.alert_is_present())
-        driver.switch_to.alert.accept()
-    except:
-        pass
-
-    print("Ejecutando búsqueda final...")
-
-    btn_buscar = wait.until(
-        EC.element_to_be_clickable((By.NAME, "btnBusqueda"))
-    )
-
-    driver.execute_script("arguments[0].click();", btn_buscar)
-
-    print("Cargando resultados finales...")
-    time.sleep(10)
-
-    print("\nExtrayendo TEXTO desde la ventana de resultados...\n")
-
-    filas = driver.find_elements(By.CSS_SELECTOR,
-        "tr.cssGridAdvancedSearch, tr.cssGridAdvancedSearchAlter"
-    )
-
-    print(f"Filas encontradas: {len(filas)}")
+def ejecutar_busqueda():
+    driver = gs.UndetectedChromeDriver()
+    wait = WebDriverWait(driver, 40)
 
     resultados = []
 
-    for fila in filas[:3]:
-        columnas = fila.find_elements(By.TAG_NAME, "td")
+    try:
+        print("Accediendo a Mercado Público...")
+        driver.get("https://www.mercadopublico.cl/portal/Modules/Site/Busquedas/BuscadorAvanzado.aspx?qs=1")
 
-        if len(columnas) >= 5:
-            resultados.append({
-                "numero": columnas[0].text.strip(),
-                "nombre": columnas[1].text.strip(),
-                "comprador": columnas[2].text.strip(),
-                "fecha": columnas[3].text.strip(),
-                "estado": columnas[4].text.strip()
-            })
+        time.sleep(7)
 
-    print("\n=== RESULTADOS EXTRAÍDOS ===\n")
+        print("Marcando checkbox Comprador a Buscar...")
 
-    for r in resultados:
-        print("---------------")
-        print("Número   :", r["numero"])
-        print("Nombre   :", r["nombre"])
-        print("Comprador:", r["comprador"])
-        print("Fecha    :", r["fecha"])
-        print("Estado   :", r["estado"])
+        chk = wait.until(
+            EC.presence_of_element_located((By.ID, "chkComprador"))
+        )
 
-    # =============== PROCESO GOOGLE SHEETS ===============
+        driver.execute_script("arguments[0].click();", chk)
 
-    historial = obtener_historial()
+        print("Abriendo modal de búsqueda...")
 
-    nuevas = detectar_nuevas(resultados, historial)
+        btn = wait.until(
+            EC.element_to_be_clickable((By.ID, "btnComprador"))
+        )
 
-    guardar_resultados(resultados)
+        driver.execute_script("arguments[0].click();", btn)
 
-    print("\nDatos guardados en Google Sheets correctamente ✅")
+        print("Modal abierto correctamente.")
 
-    # =============== MENSAJE ALERTA ===============
+        input_run = wait.until(
+            EC.visibility_of_element_located((By.NAME, "txtTaxId"))
+        )
 
-    if nuevas:
-        print("\n🚨 SE DETECTARON LICITACIONES NUEVAS 🚨\n")
+        input_run.clear()
 
-        mensaje = "📢 NUEVAS LICITACIONES DETECTADAS\n\n"
+        for char in RUT:
+            input_run.send_keys(char)
+            time.sleep(0.1)
 
-        for n in nuevas:
-            mensaje += f"🔹 {n['numero']}\n"
-            mensaje += f"{n['nombre']}\n"
-            mensaje += f"📅 {n['fecha']} - {n['estado']}\n\n"
+        time.sleep(1)
 
-        print(mensaje)
+        btn_search_modal = driver.find_element(By.NAME, "btnSearchComprador")
+        driver.execute_script("arguments[0].click();", btn_search_modal)
 
+        print("RUT buscado.")
+
+        org_link = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "span[id*='lblOrganizationName']"))
+        )
+
+        org_link.click()
+
+        print("Organización seleccionada.")
+
+        time.sleep(2)
+
+        btn_buscar = wait.until(
+            EC.element_to_be_clickable((By.NAME, "btnBusqueda"))
+        )
+
+        driver.execute_script("arguments[0].click();", btn_buscar)
+
+        print("Cargando resultados finales...")
+        time.sleep(10)
+
+        print("Extrayendo TEXTO desde la ventana de resultados...")
+
+        filas = driver.find_elements(
+            By.CSS_SELECTOR,
+            "tr.cssGridAdvancedSearch, tr.cssGridAdvancedSearchAlter"
+        )
+
+        print("Filas encontradas:", len(filas))
+
+        for fila in filas[:3]:
+            columnas = fila.find_elements(By.TAG_NAME, "td")
+
+            if len(columnas) >= 5:
+                resultados.append({
+                    "numero": columnas[0].text.strip(),
+                    "nombre": columnas[1].text.strip(),
+                    "comprador": columnas[2].text.strip(),
+                    "fecha": columnas[3].text.strip(),
+                    "estado": columnas[4].text.strip()
+                })
+
+        print("\n=== RESULTADOS EXTRAÍDOS ===\n")
+
+        for r in resultados:
+            print(r)
+
+        return resultados
+
+    except Exception as e:
+        print("ERROR DURANTE EJECUCIÓN:", str(e))
+        return []
+
+    finally:
+        driver.quit()
+
+
+if __name__ == "__main__":
+
+    datos = ejecutar_busqueda()
+
+    if datos:
+        guardar_resultados_en_sheets(datos)
     else:
-        print("\nNo hay licitaciones nuevas desde la última ejecución.")
-
-    print("\nProceso finalizado correctamente ✅")
-
-except Exception as e:
-    driver.save_screenshot("error_debug.png")
-    print(f"\nERROR: {str(e)}")
-    print("Se guardó 'error_debug.png' para revisar.")
-
-finally:
-    driver.quit()
+        print("No se encontraron resultados para guardar.")
