@@ -1,55 +1,80 @@
 import time
-import json
-import os
-import datetime
-
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 
-
-# ==========================================
+# ==============================
 # CONFIGURACIÓN
-# ==========================================
+# ==============================
 
-RUT_BUSCAR = "60803000-K"   # 👈 CAMBIA AQUÍ TU RUT
-NOMBRE_HOJA = "historial"
+RUT_BUSCAR = "61.980.230-6"
 
+SPREADSHEET_ID = "1s1XwpGs1XDggSaUOi0_0jA6Z2sLXYBk4lkDU0aZlkc4"
+HOJA = "historial"
 
-# ==========================================
-# AUTENTICACIÓN GOOGLE SHEETS
-# ==========================================
+ARCHIVO_CREDENCIALES = "credenciales.json"
 
-def conectar_google_sheets():
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-    print("Conectando con Google Sheets...")
+# ==============================
+# GOOGLE SHEETS
+# ==============================
 
-    creds_json = os.environ["GOOGLE_CREDENTIALS"]
-    creds_dict = json.loads(creds_json)
-
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-
-    cliente = gspread.authorize(creds)
-
-    sheet = cliente.open("MercadoPublico").worksheet(NOMBRE_HOJA)
-
-    print("Conexión exitosa con Google Sheets ✅")
-
-    return sheet
+def conectar_sheets():
+    creds = Credentials.from_service_account_file(
+        ARCHIVO_CREDENCIALES,
+        scopes=SCOPES
+    )
+    service = build("sheets", "v4", credentials=creds)
+    return service.spreadsheets()
 
 
-# ==========================================
-# EJECUTAR BÚSQUEDA EN MERCADO PÚBLICO
-# ==========================================
+def leer_historial(sheets):
+    rango = f"{HOJA}!A2:F"
+
+    result = sheets.values().get(
+        spreadsheetId=SPREADSHEET_ID,
+        range=rango
+    ).execute()
+
+    valores = result.get("values", [])
+
+    return {fila[1] for fila in valores if len(fila) > 1}
+
+
+def guardar_resultados(sheets, resultados):
+    rango = f"{HOJA}!A:F"
+
+    valores = []
+
+    for r in resultados:
+        valores.append([
+            time.strftime("%Y-%m-%d %H:%M:%S"),
+            r["numero"],
+            r["nombre"],
+            r["comprador"],
+            r["fecha_cierre"],
+            r["estado"]
+        ])
+
+    body = {"values": valores}
+
+    sheets.values().append(
+        spreadsheetId=SPREADSHEET_ID,
+        range=rango,
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body=body
+    ).execute()
+
+
+# ==============================
+# SELENIUM - EXTRACCIÓN
+# ==============================
 
 def ejecutar_busqueda():
 
@@ -59,40 +84,69 @@ def ejecutar_busqueda():
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
 
     driver = uc.Chrome(options=options)
-    wait = WebDriverWait(driver, 25)
+    wait = WebDriverWait(driver, 40)
 
     try:
-        print("Accediendo a Mercado Público...")
-        driver.get("https://www.mercadopublico.cl/Home")
+        print("Accediendo al Buscador Avanzado...")
+        driver.get("https://www.mercadopublico.cl/portal/Modules/Site/Busquedas/BuscadorAvanzado.aspx?qs=1")
 
-        time.sleep(5)
+        time.sleep(8)
 
         print("Marcando checkbox Comprador...")
-        chk = wait.until(EC.element_to_be_clickable((By.ID, "chkComprador")))
+
+        chk = wait.until(
+            EC.element_to_be_clickable((By.ID, "chkComprador"))
+        )
         driver.execute_script("arguments[0].click();", chk)
 
-        print("Abriendo modal de búsqueda...")
-        boton = wait.until(EC.element_to_be_clickable((By.ID, "btnBuscarComprador")))
-        boton.click()
+        time.sleep(2)
 
-        print("Buscando por RUT...")
-        input_rut = wait.until(EC.presence_of_element_located((By.ID, "txtRut")))
+        print("Abriendo modal de búsqueda de comprador...")
+
+        btn = wait.until(
+            EC.element_to_be_clickable((By.ID, "btnComprador"))
+        )
+        driver.execute_script("arguments[0].click();", btn)
+
+        print("Modal abierto.")
+
+        input_rut = wait.until(
+            EC.visibility_of_element_located((By.NAME, "txtTaxId"))
+        )
+
         input_rut.clear()
         input_rut.send_keys(RUT_BUSCAR)
 
         time.sleep(2)
 
-        print("Seleccionando primer resultado...")
-        resultado = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, ".ui-menu-item")))
-        resultado.click()
+        btn_search = driver.find_element(By.NAME, "btnSearchComprador")
+        driver.execute_script("arguments[0].click();", btn_search)
+
+        print("RUT ingresado y buscado.")
+
+        org = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "span[id*='lblOrganizationName']"))
+        )
+        org.click()
+
+        print("Organización seleccionada.")
+
+        time.sleep(3)
 
         print("Ejecutando búsqueda final...")
-        buscar = wait.until(EC.element_to_be_clickable((By.ID, "btnBuscar")))
-        buscar.click()
 
-        time.sleep(8)
+        btn_buscar = wait.until(
+            EC.element_to_be_clickable((By.NAME, "btnBusqueda"))
+        )
+
+        driver.execute_script("arguments[0].click();", btn_buscar)
+
+        print("Esperando resultados...")
+
+        time.sleep(10)
 
         print("Extrayendo resultados...")
 
@@ -124,77 +178,47 @@ def ejecutar_busqueda():
 
         return datos
 
+    except Exception as e:
+        driver.save_screenshot("error.png")
+        print("Error detectado. Se guardó captura error.png")
+        raise e
+
     finally:
         driver.quit()
 
 
-# ==========================================
-# GUARDAR EN GOOGLE SHEETS
-# ==========================================
-
-def guardar_en_sheets(sheet, resultados):
-
-    print("Leyendo historial existente...")
-
-    existentes = sheet.get_all_records()
-
-    numeros_existentes = [fila["número"] for fila in existentes]
-
-    nuevos = []
-
-    for r in resultados:
-        if r["numero"] not in numeros_existentes:
-            nuevos.append(r)
-
-    if not nuevos:
-        print("No hay licitaciones nuevas.")
-        return []
-
-    print(f"Se encontraron {len(nuevos)} licitaciones NUEVAS 🔔")
-
-    fecha_actual = datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-
-    for r in nuevos:
-
-        sheet.append_row([
-            fecha_actual,
-            r["numero"],
-            r["nombre"],
-            r["comprador"],
-            r["fecha_cierre"],
-            r["estado"]
-        ])
-
-    print("Nuevos registros guardados en Google Sheets ✅")
-
-    return nuevos
-
-
-# ==========================================
-# PROGRAMA PRINCIPAL
-# ==========================================
+# ==============================
+# PROCESO PRINCIPAL
+# ==============================
 
 def main():
 
+    sheets = conectar_sheets()
+
+    print("Leyendo historial existente...")
+    historial = leer_historial(sheets)
+
+    print("Ejecutando búsqueda en Mercado Público...")
     resultados = ejecutar_busqueda()
 
-    if not resultados:
-        print("No se obtuvieron resultados desde Mercado Público.")
-        return
+    nuevas = []
 
-    sheet = conectar_google_sheets()
+    for r in resultados:
+        if r["numero"] not in historial:
+            nuevas.append(r)
 
-    nuevos = guardar_en_sheets(sheet, resultados)
+    print(f"Licitaciones nuevas detectadas: {len(nuevas)}")
 
-    if nuevos:
+    if nuevas:
+        print("Guardando nuevas licitaciones en Google Sheets...")
+        guardar_resultados(sheets, nuevas)
+        print("Guardado exitoso.")
 
-        print("\n📢 LICITACIONES NUEVAS DETECTADAS:\n")
+    print("\n=== RESUMEN ===")
+    for r in resultados:
+        print(f"- {r['numero']} | {r['nombre']}")
 
-        for r in nuevos:
-            print(f"- {r['numero']} | {r['nombre']} | {r['fecha_cierre']}")
-
-    else:
-        print("\nSin novedades por ahora 🙂")
+    print("\nProceso finalizado correctamente.")
 
 
 if __name__ == "__main__":
